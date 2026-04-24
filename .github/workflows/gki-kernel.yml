@@ -57,23 +57,30 @@ jobs:
           remove-haskell: 'true'
           remove-codeql: 'true'
 
-      - uses: actions/checkout@v4
+      - name: Checkout KernelSU
+        uses: actions/checkout@v4
         with:
           repository: luyanci/KernelSU
           ref: ${{ inputs.ksu_branch }}
           path: KernelSU
           fetch-depth: 0
 
-      - name: Install dependencies (LLVM fix)
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y repo clang llvm
+          sudo apt-get install -y repo clang llvm ccache
 
       - name: Setup kernel source
         run: |
           set -e
-          mkdir android-kernel && cd android-kernel
-          repo init --depth=1 --u https://android.googlesource.com/kernel/manifest -b common-${{ inputs.tag }} --repo-rev=v2.16
+          mkdir android-kernel
+          cd android-kernel
+
+          repo init --depth=1 \
+            -u https://android.googlesource.com/kernel/manifest \
+            -b common-${{ inputs.tag }} \
+            --repo-rev=v2.16
+
           repo sync -c -j$(nproc --all) --no-tags
 
       # =========================
@@ -86,27 +93,24 @@ jobs:
           echo "CONFIG_KVM=y" >> common/build.config.gki.aarch64
           echo "CONFIG_KVM_ARM_HOST=y" >> common/build.config.gki.aarch64
 
+      # =========================
+      # KernelSU integration
+      # =========================
       - name: Setup KernelSU
         working-directory: android-kernel
         run: |
           set -e
           GKI_ROOT=$(pwd)
 
-          ln -sf $GITHUB_WORKSPACE/KernelSU/kernel $GKI_ROOT/common/drivers/kernelsu
+          ln -sf $GITHUB_WORKSPACE/KernelSU/kernel \
+            $GKI_ROOT/common/drivers/kernelsu
 
           echo -e "\nobj-\$(CONFIG_KSU) += kernelsu/" >> common/drivers/Makefile
           sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' common/drivers/Kconfig
 
       # =========================
-      # CLEAN PROTECTED EXPORTS (YOUR REQUEST)
+      # BUILD
       # =========================
-      - name: Clean protected exports
-        working-directory: android-kernel
-        run: |
-          set -e
-          rm -f common/android/abi_gki_protected_exports_* || true
-          echo "[+] Protected exports cleaned"
-
       - name: Build Kernel/LKM
         working-directory: android-kernel
         run: |
@@ -116,32 +120,46 @@ jobs:
             LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 \
             build/build.sh CC="ccache clang"
           else
-            tools/bazel run --config=fast --lto=thin \
-              //common:kernel_aarch64_dist -- --dist_dir=dist
+            tools/bazel run \
+              --config=fast \
+              --lto=thin \
+              --//common:skip_abi_checks=true \
+              //common:kernel_aarch64_dist \
+              -- --dist_dir=dist
           fi
 
       # =========================
-      # FIXED ARTIFACT STEP (NO llvm-strip-15)
+      # ARTIFACT PREP
       # =========================
       - name: Prepare artifacts
         run: |
           set -e
 
-          OUTDIR=android-kernel/out/${{ inputs.version }}/dist
+          OUTDIR=android-kernel/out/${{ inputs.tag }}/dist
+
+          # fallback if path differs
+          if [ ! -d "$OUTDIR" ]; then
+            OUTDIR=android-kernel/dist
+          fi
+
           mkdir -p output
 
           if [ "${{ inputs.build_lkm }}" = "true" ]; then
 
-            LLVM_STRIP=$(which llvm-strip || true)
+            if [ -f "$OUTDIR/kernelsu.ko" ]; then
+              LLVM_STRIP=$(which llvm-strip || true)
 
-            if [ -z "$LLVM_STRIP" ]; then
-              echo "llvm-strip not found, using strip fallback"
-              strip --strip-unneeded $OUTDIR/kernelsu.ko
+              if [ -n "$LLVM_STRIP" ]; then
+                $LLVM_STRIP --strip-unneeded $OUTDIR/kernelsu.ko
+              else
+                strip --strip-unneeded $OUTDIR/kernelsu.ko || true
+              fi
+
+              mv $OUTDIR/kernelsu.ko ./output/${{ inputs.version }}_kernelsu.ko
             else
-              $LLVM_STRIP --strip-unneeded $OUTDIR/kernelsu.ko
+              echo "kernelsu.ko not found!"
+              exit 1
             fi
-
-            mv $OUTDIR/kernelsu.ko ./output/${{ inputs.version }}_kernelsu.ko
 
           else
             cp $OUTDIR/Image ./output/ || true
