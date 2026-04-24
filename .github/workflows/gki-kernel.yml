@@ -12,10 +12,6 @@ on:
       tag:
         required: true
         type: string
-      os_patch_level:
-        required: false
-        type: string
-        default: 2022-05
       ksu_branch:
         required: false
         type: string
@@ -27,7 +23,6 @@ on:
 
 jobs:
   build:
-    name: Build ${{ inputs.version_name }}
     runs-on: ubuntu-latest
 
     env:
@@ -39,8 +34,7 @@ jobs:
       # =========================
       # SPACE
       # =========================
-      - name: Maximize build space
-        uses: easimon/maximize-build-space@master
+      - uses: easimon/maximize-build-space@master
         with:
           root-reserve-mb: 8192
           temp-reserve-mb: 2048
@@ -50,28 +44,26 @@ jobs:
           remove-codeql: 'true'
 
       # =========================
-      # KERNELSU
+      # KernelSU
       # =========================
-      - name: Checkout KernelSU
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           repository: luyanci/KernelSU
           ref: ${{ inputs.ksu_branch }}
           path: KernelSU
-          fetch-depth: 0
 
       # =========================
-      # DEPS
+      # Dependencies
       # =========================
-      - name: Install dependencies
+      - name: Install deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y repo clang llvm ccache flex bison bc libssl-dev
+          sudo apt-get install -y repo clang llvm ccache
 
       # =========================
-      # SYNC KERNEL
+      # Sync kernel
       # =========================
-      - name: Setup kernel source
+      - name: Sync kernel
         run: |
           set -e
           mkdir android-kernel
@@ -82,60 +74,46 @@ jobs:
             -b common-${{ inputs.tag }} \
             --repo-rev=v2.16
 
-          repo sync -c -j$(nproc --all) --no-tags
+          repo sync -c -j$(nproc) --no-tags
 
       # =========================
-      # OPTIONAL CONFIGS
-      # =========================
-      - name: Enable KVM
-        working-directory: android-kernel
-        run: |
-          echo "CONFIG_VIRTUALIZATION=y" >> common/build.config.gki.aarch64
-          echo "CONFIG_KVM=y" >> common/build.config.gki.aarch64
-          echo "CONFIG_KVM_ARM_HOST=y" >> common/build.config.gki.aarch64
-
-      # =========================
-      # KERNELSU INTEGRATION
+      # KernelSU
       # =========================
       - name: Setup KernelSU
         working-directory: android-kernel
         run: |
           set -e
 
-          ln -sf $GITHUB_WORKSPACE/KernelSU/kernel \
-            common/drivers/kernelsu
+          ln -sf $GITHUB_WORKSPACE/KernelSU/kernel common/drivers/kernelsu
 
           echo -e "\nobj-\$(CONFIG_KSU) += kernelsu/" >> common/drivers/Makefile
           sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' common/drivers/Kconfig
 
       # =========================
-      # BUILD (FORCED build.sh)
+      # BUILD (BAZEL ONLY)
       # =========================
-      - name: Build Kernel / LKM
+      - name: Build Kernel
         working-directory: android-kernel
         run: |
           set -e
 
-          # Force classic AOSP build (avoids Bazel ABI issues)
-          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 \
-          build/build.sh CC="ccache clang"
+          tools/bazel run \
+            --config=fast \
+            --lto=thin \
+            //common:kernel_aarch64_dist \
+            -- --dist_dir=dist
 
       # =========================
-      # PREPARE OUTPUT
+      # OUTPUT
       # =========================
       - name: Prepare artifacts
         run: |
           set -e
 
-          # Detect output directory automatically
-          OUTDIR=$(find android-kernel -type d -path "*dist" | head -n 1)
-
-          echo "Using OUTDIR=$OUTDIR"
-
+          OUTDIR=android-kernel/dist
           mkdir -p output
 
           if [ "${{ inputs.build_lkm }}" = "true" ]; then
-
             if [ ! -f "$OUTDIR/kernelsu.ko" ]; then
               echo "kernelsu.ko not found!"
               exit 1
@@ -150,14 +128,13 @@ jobs:
             fi
 
             mv $OUTDIR/kernelsu.ko ./output/${{ inputs.version }}_kernelsu.ko
-
           else
             cp $OUTDIR/Image ./output/ || true
             cp $OUTDIR/Image.lz4 ./output/ || true
           fi
 
       # =========================
-      # UPLOAD
+      # Upload
       # =========================
       - name: Upload LKM
         if: ${{ inputs.build_lkm == true }}
@@ -166,7 +143,7 @@ jobs:
           name: ${{ inputs.version }}-lkm
           path: ./output/*.ko
 
-      - name: Upload Kernel Image
+      - name: Upload Kernel
         if: ${{ inputs.build_lkm == false }}
         uses: actions/upload-artifact@v4
         with:
