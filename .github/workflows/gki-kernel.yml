@@ -1,4 +1,4 @@
-name: GKI Kernel Build
+name: GKI Kernel Build (KVM)
 
 on:
   workflow_call:
@@ -64,12 +64,13 @@ on:
 
 jobs:
   build:
-    name: Build ${{ inputs.version_name }}
+    name: Build KVM ${{ inputs.version_name }}
     runs-on: ubuntu-latest
     env:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
+
     steps:
       - name: Maximize build space
         uses: easimon/maximize-build-space@master
@@ -151,7 +152,6 @@ jobs:
           else
             SYMBOL_LIST=$COMMON_ROOT/android/abi_gki_aarch64
           fi
-          # python3 $KSU_ROOT/scripts/abi_gki_all.py $ABI_XML > $SYMBOL_LIST
           echo "[+] Add KernelSU symbols"
           cat $KSU_ROOT/kernel/export_symbol.txt | awk '{sub("[ \t]+","");print "  "$0}' >> $SYMBOL_LIST
 
@@ -178,7 +178,6 @@ jobs:
             echo "drivers/kernelsu/kernelsu.ko" >> common/android/gki_aarch64_modules
           fi
 
-          # bazel build, android14-5.15, android14-6.1 use bazel
           if [ ! -e build/build.sh ]; then
             sed -i 's/needs unknown symbol/Dont abort when unknown symbol/g' build/kernel/*.sh || echo "No unknown symbol scripts found"
             if [ -e common/modules.bzl ]; then
@@ -206,7 +205,6 @@ jobs:
       - name: Make working directory clean to avoid dirty
         working-directory: android-kernel
         run: |
-          # Fix bazel build error
           if [ -f common/BUILD.bazel ]; then
             [ -f android/abi_gki_protected_exports_aarch64 ] || sed -i '/^[[:space:]]*"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",$/d' common/BUILD.bazel
           fi
@@ -230,7 +228,6 @@ jobs:
           fi
 
       - name: Prepare artifacts
-        id: prepareArtifacts
         run: |
           OUTDIR=android-kernel/out/${{ inputs.version }}/dist
           if [ ! -e $OUTDIR ]; then
