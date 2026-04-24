@@ -1,46 +1,26 @@
-name: GKI Kernel Build
+name: GKI Kernel KVM AArch64 Build
 
 on:
-  workflow_call:
-    inputs:
-      version:
-        required: true
-        type: string
-      version_name:
-        required: true
-        type: string
-      tag:
-        required: true
-        type: string
-      ksu_branch:
-        required: false
-        type: string
-        default: main
-      build_lkm:
-        required: false
-        type: boolean
-        default: true
-
   workflow_dispatch:
     inputs:
       version:
-        description: "Version"
+        description: "Build version"
         required: true
         default: "test"
       version_name:
         description: "Version name"
         required: true
-        default: "test"
+        default: "android15-kvm"
       tag:
-        description: "Kernel tag (e.g. android14-6.1)"
+        description: "Kernel tag (example: android15-6.6)"
         required: true
-        default: "android14-6.1"
+        default: "android15-6.6"
       ksu_branch:
         description: "KernelSU branch"
         required: false
         default: "main"
       build_lkm:
-        description: "Build LKM"
+        description: "Build KernelSU LKM"
         required: false
         default: "true"
 
@@ -55,7 +35,7 @@ jobs:
 
     steps:
       # =========================
-      # SPACE
+      # SPACE OPTIMIZATION
       # =========================
       - name: Maximize build space
         uses: easimon/maximize-build-space@master
@@ -68,7 +48,7 @@ jobs:
           remove-codeql: 'true'
 
       # =========================
-      # KernelSU
+      # KERNELSU
       # =========================
       - name: Checkout KernelSU
         uses: actions/checkout@v4
@@ -78,7 +58,7 @@ jobs:
           path: KernelSU
 
       # =========================
-      # Dependencies
+      # DEPENDENCIES
       # =========================
       - name: Install dependencies
         run: |
@@ -86,9 +66,9 @@ jobs:
           sudo apt-get install -y repo clang llvm ccache flex bison bc libssl-dev
 
       # =========================
-      # Sync kernel
+      # SYNC KERNEL
       # =========================
-      - name: Sync kernel
+      - name: Sync kernel source
         run: |
           set -e
           mkdir android-kernel
@@ -102,7 +82,23 @@ jobs:
           repo sync -c -j$(nproc) --no-tags
 
       # =========================
-      # KernelSU integration
+      # ENABLE KVM (AARCH64)
+      # =========================
+      - name: Enable KVM AArch64
+        working-directory: android-kernel
+        run: |
+          set -e
+
+          CONFIG=common/build.config.gki.aarch64
+
+          echo "CONFIG_VIRTUALIZATION=y" >> $CONFIG
+          echo "CONFIG_KVM=y" >> $CONFIG
+          echo "CONFIG_KVM_ARM_HOST=y" >> $CONFIG
+          echo "CONFIG_KVM_ARM_VGIC_V3=y" >> $CONFIG
+          echo "CONFIG_KVM_ARM_TIMER=y" >> $CONFIG
+
+      # =========================
+      # KERNELSU INTEGRATION
       # =========================
       - name: Setup KernelSU
         working-directory: android-kernel
@@ -115,7 +111,7 @@ jobs:
           sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' common/drivers/Kconfig
 
       # =========================
-      # BUILD (Bazel, ABI intact)
+      # BUILD (BAZEL - GKI STANDARD)
       # =========================
       - name: Build Kernel
         working-directory: android-kernel
@@ -129,7 +125,7 @@ jobs:
             -- --dist_dir=dist
 
       # =========================
-      # PREP OUTPUT
+      # ARTIFACT PREPARATION
       # =========================
       - name: Prepare artifacts
         run: |
@@ -137,7 +133,7 @@ jobs:
 
           OUTDIR=$(find android-kernel -type d -name dist | head -n 1)
 
-          echo "Using OUTDIR=$OUTDIR"
+          echo "Output: $OUTDIR"
 
           mkdir -p output
 
@@ -166,14 +162,14 @@ jobs:
       # =========================
       # UPLOAD
       # =========================
-      - name: Upload LKM
+      - name: Upload KernelSU LKM
         if: ${{ inputs.build_lkm == 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.version }}-lkm
+          name: ${{ inputs.version }}-kvm-lkm
           path: ./output/*.ko
 
-      - name: Upload Kernel
+      - name: Upload Kernel Image
         if: ${{ inputs.build_lkm == 'false' }}
         uses: actions/upload-artifact@v4
         with:
