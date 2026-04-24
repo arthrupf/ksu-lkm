@@ -1,4 +1,4 @@
-name: GKI Kernel KVM AArch64 Build (No LKM)
+name: GKI Kernel KVM AArch64 Build (Fixed Permissions)
 
 on:
   workflow_dispatch:
@@ -55,7 +55,7 @@ jobs:
       # =========================
       # SYNC KERNEL
       # =========================
-      - name: Sync kernel source
+      - name: Sync kernel
         run: |
           set -e
           mkdir android-kernel
@@ -69,17 +69,22 @@ jobs:
           repo sync -c -j$(nproc) --no-tags
 
       # =========================
-      # FIX KERNEL SCRIPTS
+      # FIX PERMISSIONS (SAFE WAY, NOT 777)
       # =========================
-      - name: Fix kernel scripts permissions
+      - name: Fix kernel permissions
         working-directory: android-kernel
         run: |
           set -e
-          chmod +x -R common/scripts || true
-          chmod +x -R common/tools || true
+
+          # Only make required kernel scripts executable
+          chmod +x common/scripts/* || true
+          find common/scripts -type f -exec chmod +x {} \; || true
+
+          chmod +x common/tools/* || true
+          find common/tools -type f -exec chmod +x {} \; || true
 
       # =========================
-      # ENABLE KVM (ANDROID 15 AARCH64)
+      # ENABLE KVM
       # =========================
       - name: Enable KVM
         working-directory: android-kernel
@@ -95,7 +100,19 @@ jobs:
           echo "CONFIG_KVM_ARM_TIMER=y" >> $CFG
 
       # =========================
-      # BUILD (BAZEL ONLY)
+      # BUILD HOST TOOLS FIRST (FIXES fixdep)
+      # =========================
+      - name: Prepare kernel host tools
+        working-directory: android-kernel
+        run: |
+          set -e
+
+          tools/bazel build \
+            --config=fast \
+            //common:kernel_aarch64_modules_prepare
+
+      # =========================
+      # BUILD KERNEL
       # =========================
       - name: Build Kernel
         working-directory: android-kernel
@@ -105,6 +122,7 @@ jobs:
           tools/bazel run \
             --config=fast \
             --lto=thin \
+            --//common:kernel_aarch64_modules_prepare=true \
             //common:kernel_aarch64_dist \
             -- --dist_dir=dist
 
@@ -121,19 +139,13 @@ jobs:
 
           mkdir -p output
 
-          # kernel image only (NO LKM / NO KERNELSU)
-          if [ -f "$OUTDIR/Image" ]; then
-            cp "$OUTDIR/Image" ./output/
-          fi
-
-          if [ -f "$OUTDIR/Image.lz4" ]; then
-            cp "$OUTDIR/Image.lz4" ./output/
-          fi
+          cp "$OUTDIR/Image" ./output/ || true
+          cp "$OUTDIR/Image.lz4" ./output/ || true
 
       # =========================
       # UPLOAD
       # =========================
-      - name: Upload Kernel Image
+      - name: Upload Kernel
         uses: actions/upload-artifact@v4
         with:
           name: Image-${{ inputs.version_name }}
