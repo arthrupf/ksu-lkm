@@ -1,148 +1,75 @@
-name: GKI Kernel Build (KVM + WiFi Fixed)
+name: Build LKM (KVM) for KernelSU
 
 on:
+  push:
+    branches: ["master"]
+    paths:
+      - ".github/workflows/build-lkm.yml"
+      - ".github/workflows/gki-kernel.yml"
+
+  pull_request:
+    branches: ["master"]
+    paths:
+      - ".github/workflows/build-lkm.yml"
+
   workflow_call:
+
+  workflow_dispatch:
     inputs:
-      version:
-        required: true
+      KSUBRANCH:
         type: string
-      version_name:
-        required: true
-        type: string
-      tag:
-        required: true
-        type: string
-      os_patch_level:
-        required: false
-        type: string
-        default: 2022-05
-      patch_path:
-        required: false
-        type: string
-      use_cache:
-        required: false
-        type: boolean
-        default: true
-      debug:
-        required: false
-        type: boolean
-        default: false
-      ksu_branch:
-        required: false
-        type: string
+        description: "KernelSU branch"
         default: 'main'
-      build_lkm:
-        required: false
-        type: boolean
-        default: true
-      enable_kvm:
-        required: false
-        type: boolean
-        default: true
+        required: true
 
 jobs:
-  build:
-    name: Build KVM ${{ inputs.version_name }}
-    runs-on: ubuntu-latest
+  build-lkm:
+    name: Build LKM (KVM Enabled)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: "android12-5.10"
+            sub_level: 240
+            os_patch_level: 2025-09
 
-    steps:
-      - name: Maximize build space
-        uses: easimon/maximize-build-space@master
+          - version: "android13-5.10"
+            sub_level: 238
+            os_patch_level: 2025-07
 
-      - uses: actions/checkout@v4
-        with:
-          repository: luyanci/KernelSU
-          ref: ${{ inputs.ksu_branch }}
-          path: KernelSU
+          - version: "android13-5.15"
+            sub_level: 189
+            os_patch_level: 2025-09
 
-      - name: Setup kernel source
-        run: |
-          sudo apt-get install repo -y
-          mkdir android-kernel && cd android-kernel
-          repo init --depth=1 --u https://android.googlesource.com/kernel/manifest -b common-${{ inputs.tag }} --repo-rev=v2.16
-          repo sync -c -j$(nproc)
+          - version: "android14-5.15"
+            sub_level: 185
+            os_patch_level: 2025-07
 
-      - name: Setup KernelSU
-        run: |
-          cd android-kernel
-          ln -sf $GITHUB_WORKSPACE/KernelSU/kernel common/drivers/kernelsu
-          echo 'obj-$(CONFIG_KSU) += kernelsu/' >> common/drivers/Makefile
+          - version: "android14-6.1"
+            sub_level: 145
+            os_patch_level: 2025-09
 
-      # -------------------------
-      # ✅ KVM ENABLE
-      # -------------------------
-      - name: Enable KVM
-        if: inputs.enable_kvm == true
-        working-directory: android-kernel
-        run: |
-          DEFCONFIG=$(find common -name "gki_defconfig" | head -n 1)
+          - version: "android15-6.6"
+            sub_level: 98
+            os_patch_level: 2025-09
 
-          cat <<EOF >> $DEFCONFIG
-CONFIG_KVM=y
-CONFIG_KVM_ARM_HOST=y
-CONFIG_KVM_ARM_VGIC=y
-CONFIG_KVM_ARM_TIMER=y
-EOF
+          - version: "android16-6.12"
+            sub_level: 38
+            os_patch_level: 2025-09
 
-          sort -u -o $DEFCONFIG $DEFCONFIG
-          echo "[+] KVM enabled"
+    uses: ./.github/workflows/gki-kernel.yml
 
-      # -------------------------
-      # ✅ WIFI FIX (your command included)
-      # -------------------------
-      - name: Fix WiFi (GKI ABI bypass)
-        working-directory: android-kernel
-        run: |
-          echo "[+] Removing ABI protected exports (WiFi fix)"
+    with:
+      version: ${{ matrix.version }}
+      version_name: ${{ matrix.version }}.${{ matrix.sub_level }}
+      tag: ${{ matrix.version }}-${{ matrix.os_patch_level }}
+      os_patch_level: ${{ matrix.os_patch_level }}
 
-          rm -f common/android/abi_gki_protected_exports_* || echo "No protected exports found"
+      # KernelSU branch
+      ksu_branch: ${{ inputs.KSUBRANCH }}
 
-          # Prevent Bazel build failures if referenced
-          if [ -f common/BUILD.bazel ]; then
-            sed -i '/abi_gki_protected_exports/d' common/BUILD.bazel || true
-          fi
+      # LKM build enabled
+      build_lkm: true
 
-          echo "[+] WiFi fix applied"
-
-      # -------------------------
-      # KernelSU debug option
-      # -------------------------
-      - name: Setup KernelSU debug
-        if: inputs.debug == true
-        run: |
-          echo "ccflags-y += -DCONFIG_KSU_DEBUG" >> KernelSU/kernel/Makefile
-
-      # -------------------------
-      # ccache
-      # -------------------------
-      - name: Setup ccache
-        if: inputs.use_cache == true
-        uses: hendrikmuhs/ccache-action@v1
-
-      # -------------------------
-      # Build kernel
-      # -------------------------
-      - name: Build Kernel
-        working-directory: android-kernel
-        run: |
-          if [ -e build/build.sh ]; then
-            BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
-          else
-            tools/bazel run --config=fast --lto=thin //common:kernel_aarch64_dist -- --dist_dir=dist
-          fi
-
-      # -------------------------
-      # Prepare artifacts
-      # -------------------------
-      - name: Prepare output
-        run: |
-          mkdir -p output
-          cp -r android-kernel/dist/* output/ || true
-
-      # -------------------------
-      # Upload
-      # -------------------------
-      - uses: actions/upload-artifact@v4
-        with:
-          name: KVM-WIFI-${{ inputs.version_name }}
-          path: output/*
+      # ✅ KVM ENABLED HERE
+      enable_kvm: true
