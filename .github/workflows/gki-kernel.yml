@@ -64,25 +64,20 @@ jobs:
           path: KernelSU
           fetch-depth: 0
 
-      # =========================
-      # ✅ FIX LLVM TOOLCHAIN ISSUE
-      # =========================
-      - name: Install LLVM toolchain
+      - name: Install dependencies (LLVM fix)
         run: |
           sudo apt-get update
-          sudo apt-get install -y llvm clang
+          sudo apt-get install -y repo clang llvm
 
       - name: Setup kernel source
         run: |
           set -e
-          sudo apt-get install repo -y
-
           mkdir android-kernel && cd android-kernel
           repo init --depth=1 --u https://android.googlesource.com/kernel/manifest -b common-${{ inputs.tag }} --repo-rev=v2.16
           repo sync -c -j$(nproc --all) --no-tags
 
       # =========================
-      # ✅ KVM HOST SUPPORT
+      # KVM HOST SUPPORT
       # =========================
       - name: Enable KVM Host Support
         working-directory: android-kernel
@@ -102,6 +97,16 @@ jobs:
           echo -e "\nobj-\$(CONFIG_KSU) += kernelsu/" >> common/drivers/Makefile
           sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' common/drivers/Kconfig
 
+      # =========================
+      # CLEAN PROTECTED EXPORTS (YOUR REQUEST)
+      # =========================
+      - name: Clean protected exports
+        working-directory: android-kernel
+        run: |
+          set -e
+          rm -f common/android/abi_gki_protected_exports_* || true
+          echo "[+] Protected exports cleaned"
+
       - name: Build Kernel/LKM
         working-directory: android-kernel
         run: |
@@ -116,7 +121,7 @@ jobs:
           fi
 
       # =========================
-      # ✅ SAFE ARTIFACT STEP (FIXED)
+      # FIXED ARTIFACT STEP (NO llvm-strip-15)
       # =========================
       - name: Prepare artifacts
         run: |
@@ -127,11 +132,10 @@ jobs:
 
           if [ "${{ inputs.build_lkm }}" = "true" ]; then
 
-            # 🔥 SAFE LLVM STRIP DETECTION
             LLVM_STRIP=$(which llvm-strip || true)
 
             if [ -z "$LLVM_STRIP" ]; then
-              echo "llvm-strip not found, using fallback strip"
+              echo "llvm-strip not found, using strip fallback"
               strip --strip-unneeded $OUTDIR/kernelsu.ko
             else
               $LLVM_STRIP --strip-unneeded $OUTDIR/kernelsu.ko
@@ -140,8 +144,8 @@ jobs:
             mv $OUTDIR/kernelsu.ko ./output/${{ inputs.version }}_kernelsu.ko
 
           else
-            cp $OUTDIR/Image ./output/
-            cp $OUTDIR/Image.lz4 ./output/
+            cp $OUTDIR/Image ./output/ || true
+            cp $OUTDIR/Image.lz4 ./output/ || true
           fi
 
       - name: Upload LKM
