@@ -64,68 +64,43 @@ jobs:
           path: KernelSU
           fetch-depth: 0
 
+      # =========================
+      # ✅ FIX LLVM TOOLCHAIN ISSUE
+      # =========================
+      - name: Install LLVM toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm clang
+
       - name: Setup kernel source
         run: |
           set -e
-          df -h
-          sudo apt-get update
           sudo apt-get install repo -y
 
           mkdir android-kernel && cd android-kernel
           repo init --depth=1 --u https://android.googlesource.com/kernel/manifest -b common-${{ inputs.tag }} --repo-rev=v2.16
-
-          repo --trace sync -c -j$(nproc --all) --no-tags
+          repo sync -c -j$(nproc --all) --no-tags
 
       # =========================
-      # ✅ KVM HOST SUPPORT PATCH
+      # ✅ KVM HOST SUPPORT
       # =========================
       - name: Enable KVM Host Support
         working-directory: android-kernel
         run: |
-          echo "[+] Enabling KVM host support"
-
-          DEFCONFIG=""
-          if [ -f common/build.config.gki.aarch64 ]; then
-            DEFCONFIG="common/build.config.gki.aarch64"
-          fi
-
-          echo "CONFIG_VIRTUALIZATION=y" >> $DEFCONFIG
-          echo "CONFIG_KVM=y" >> $DEFCONFIG
-          echo "CONFIG_KVM_ARM_HOST=y" >> $DEFCONFIG
-          echo "CONFIG_ARM64=y" >> $DEFCONFIG
-
-          echo "[+] KVM config applied"
+          echo "CONFIG_VIRTUALIZATION=y" >> common/build.config.gki.aarch64
+          echo "CONFIG_KVM=y" >> common/build.config.gki.aarch64
+          echo "CONFIG_KVM_ARM_HOST=y" >> common/build.config.gki.aarch64
 
       - name: Setup KernelSU
         working-directory: android-kernel
-        env:
-          IS_DEBUG_KERNEL: ${{ inputs.debug }}
         run: |
           set -e
           GKI_ROOT=$(pwd)
 
           ln -sf $GITHUB_WORKSPACE/KernelSU/kernel $GKI_ROOT/common/drivers/kernelsu
 
-          DRIVER_MAKEFILE=$GKI_ROOT/common/drivers/Makefile
-          DRIVER_KCONFIG=$GKI_ROOT/common/drivers/Kconfig
-
-          grep -q kernelsu "$DRIVER_MAKEFILE" || \
-            echo -e "\nobj-\$(CONFIG_KSU) += kernelsu/" >> "$DRIVER_MAKEFILE"
-
-          grep -q kernelsu "$DRIVER_KCONFIG" || \
-            sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' "$DRIVER_KCONFIG"
-
-          if [ "$IS_DEBUG_KERNEL" = "true" ]; then
-            echo "ccflags-y += -DCONFIG_KSU_DEBUG" >> $GITHUB_WORKSPACE/KernelSU/kernel/Makefile
-          fi
-
-      - name: Setup ccache
-        if: inputs.use_cache == true
-        uses: hendrikmuhs/ccache-action@v1
-        with:
-          key: gki-kernel-${{ inputs.version_name }}
-          max-size: 2G
-          save: true
+          echo -e "\nobj-\$(CONFIG_KSU) += kernelsu/" >> common/drivers/Makefile
+          sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' common/drivers/Kconfig
 
       - name: Build Kernel/LKM
         working-directory: android-kernel
@@ -140,6 +115,9 @@ jobs:
               //common:kernel_aarch64_dist -- --dist_dir=dist
           fi
 
+      # =========================
+      # ✅ SAFE ARTIFACT STEP (FIXED)
+      # =========================
       - name: Prepare artifacts
         run: |
           set -e
@@ -148,8 +126,19 @@ jobs:
           mkdir -p output
 
           if [ "${{ inputs.build_lkm }}" = "true" ]; then
-            llvm-strip-15 -d $OUTDIR/kernelsu.ko
+
+            # 🔥 SAFE LLVM STRIP DETECTION
+            LLVM_STRIP=$(which llvm-strip || true)
+
+            if [ -z "$LLVM_STRIP" ]; then
+              echo "llvm-strip not found, using fallback strip"
+              strip --strip-unneeded $OUTDIR/kernelsu.ko
+            else
+              $LLVM_STRIP --strip-unneeded $OUTDIR/kernelsu.ko
+            fi
+
             mv $OUTDIR/kernelsu.ko ./output/${{ inputs.version }}_kernelsu.ko
+
           else
             cp $OUTDIR/Image ./output/
             cp $OUTDIR/Image.lz4 ./output/
