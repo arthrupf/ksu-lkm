@@ -1,4 +1,4 @@
-name: GKI Kernel KVM AArch64 Build
+name: GKI Kernel KVM AArch64 Build (No LKM)
 
 on:
   workflow_dispatch:
@@ -14,14 +14,6 @@ on:
       tag:
         required: true
         default: "android15-6.6"
-        type: string
-      ksu_branch:
-        required: false
-        default: "main"
-        type: string
-      build_lkm:
-        required: false
-        default: "true"
         type: string
 
 jobs:
@@ -49,17 +41,7 @@ jobs:
           remove-codeql: 'true'
 
       # =========================
-      # KERNELSU
-      # =========================
-      - name: Checkout KernelSU
-        uses: actions/checkout@v4
-        with:
-          repository: luyanci/KernelSU
-          ref: ${{ inputs.ksu_branch }}
-          path: KernelSU
-
-      # =========================
-      # DEPENDENCIES (FIX FOR fixdep ERROR)
+      # DEPENDENCIES
       # =========================
       - name: Install dependencies
         run: |
@@ -73,7 +55,7 @@ jobs:
       # =========================
       # SYNC KERNEL
       # =========================
-      - name: Sync kernel
+      - name: Sync kernel source
         run: |
           set -e
           mkdir android-kernel
@@ -87,9 +69,9 @@ jobs:
           repo sync -c -j$(nproc) --no-tags
 
       # =========================
-      # FIX PERMISSIONS (fix gen-hyprel issues)
+      # FIX KERNEL SCRIPTS
       # =========================
-      - name: Fix kernel scripts
+      - name: Fix kernel scripts permissions
         working-directory: android-kernel
         run: |
           set -e
@@ -113,20 +95,7 @@ jobs:
           echo "CONFIG_KVM_ARM_TIMER=y" >> $CFG
 
       # =========================
-      # KERNELSU INTEGRATION
-      # =========================
-      - name: Setup KernelSU
-        working-directory: android-kernel
-        run: |
-          set -e
-
-          ln -sf $GITHUB_WORKSPACE/KernelSU/kernel common/drivers/kernelsu
-
-          echo -e "\nobj-\$(CONFIG_KSU) += kernelsu/" >> common/drivers/Makefile
-          sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' common/drivers/Kconfig
-
-      # =========================
-      # BUILD (FIXED BAZEL FLOW)
+      # BUILD (BAZEL ONLY)
       # =========================
       - name: Build Kernel
         working-directory: android-kernel
@@ -140,7 +109,7 @@ jobs:
             -- --dist_dir=dist
 
       # =========================
-      # OUTPUT HANDLING
+      # OUTPUT
       # =========================
       - name: Prepare artifacts
         run: |
@@ -152,40 +121,19 @@ jobs:
 
           mkdir -p output
 
-          if [ "${{ inputs.build_lkm }}" = "true" ]; then
+          # kernel image only (NO LKM / NO KERNELSU)
+          if [ -f "$OUTDIR/Image" ]; then
+            cp "$OUTDIR/Image" ./output/
+          fi
 
-            if [ ! -f "$OUTDIR/kernelsu.ko" ]; then
-              echo "kernelsu.ko not found!"
-              exit 1
-            fi
-
-            LLVM_STRIP=$(which llvm-strip || true)
-
-            if [ -n "$LLVM_STRIP" ]; then
-              $LLVM_STRIP --strip-unneeded $OUTDIR/kernelsu.ko
-            else
-              strip --strip-unneeded $OUTDIR/kernelsu.ko || true
-            fi
-
-            mv $OUTDIR/kernelsu.ko ./output/${{ inputs.version }}_kernelsu.ko
-
-          else
-            cp $OUTDIR/Image ./output/ || true
-            cp $OUTDIR/Image.lz4 ./output/ || true
+          if [ -f "$OUTDIR/Image.lz4" ]; then
+            cp "$OUTDIR/Image.lz4" ./output/
           fi
 
       # =========================
-      # UPLOAD ARTIFACTS
+      # UPLOAD
       # =========================
-      - name: Upload KernelSU LKM
-        if: ${{ inputs.build_lkm == 'true' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ inputs.version }}-kvm-lkm
-          path: ./output/*.ko
-
       - name: Upload Kernel Image
-        if: ${{ inputs.build_lkm == 'false' }}
         uses: actions/upload-artifact@v4
         with:
           name: Image-${{ inputs.version_name }}
