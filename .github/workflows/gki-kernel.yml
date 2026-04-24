@@ -16,17 +16,6 @@ on:
         required: false
         type: string
         default: 2022-05
-      patch_path:
-        required: false
-        type: string
-      use_cache:
-        required: false
-        type: boolean
-        default: true
-      debug:
-        required: false
-        type: boolean
-        default: false
       ksu_branch:
         required: false
         type: string
@@ -47,6 +36,9 @@ jobs:
       CCACHE_HARDLINK: "true"
 
     steps:
+      # =========================
+      # SPACE
+      # =========================
       - name: Maximize build space
         uses: easimon/maximize-build-space@master
         with:
@@ -57,6 +49,9 @@ jobs:
           remove-haskell: 'true'
           remove-codeql: 'true'
 
+      # =========================
+      # KERNELSU
+      # =========================
       - name: Checkout KernelSU
         uses: actions/checkout@v4
         with:
@@ -65,11 +60,17 @@ jobs:
           path: KernelSU
           fetch-depth: 0
 
+      # =========================
+      # DEPS
+      # =========================
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y repo clang llvm ccache
+          sudo apt-get install -y repo clang llvm ccache flex bison bc libssl-dev
 
+      # =========================
+      # SYNC KERNEL
+      # =========================
       - name: Setup kernel source
         run: |
           set -e
@@ -84,9 +85,9 @@ jobs:
           repo sync -c -j$(nproc --all) --no-tags
 
       # =========================
-      # KVM HOST SUPPORT
+      # OPTIONAL CONFIGS
       # =========================
-      - name: Enable KVM Host Support
+      - name: Enable KVM
         working-directory: android-kernel
         run: |
           echo "CONFIG_VIRTUALIZATION=y" >> common/build.config.gki.aarch64
@@ -94,78 +95,70 @@ jobs:
           echo "CONFIG_KVM_ARM_HOST=y" >> common/build.config.gki.aarch64
 
       # =========================
-      # KernelSU integration
+      # KERNELSU INTEGRATION
       # =========================
       - name: Setup KernelSU
         working-directory: android-kernel
         run: |
           set -e
-          GKI_ROOT=$(pwd)
 
           ln -sf $GITHUB_WORKSPACE/KernelSU/kernel \
-            $GKI_ROOT/common/drivers/kernelsu
+            common/drivers/kernelsu
 
           echo -e "\nobj-\$(CONFIG_KSU) += kernelsu/" >> common/drivers/Makefile
           sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' common/drivers/Kconfig
 
       # =========================
-      # BUILD
+      # BUILD (FORCED build.sh)
       # =========================
-      - name: Build Kernel/LKM
+      - name: Build Kernel / LKM
         working-directory: android-kernel
         run: |
           set -e
 
-          if [ -e build/build.sh ]; then
-            LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 \
-            build/build.sh CC="ccache clang"
-          else
-            tools/bazel run \
-              --config=fast \
-              --lto=thin \
-              --//common:skip_abi_checks=true \
-              //common:kernel_aarch64_dist \
-              -- --dist_dir=dist
-          fi
+          # Force classic AOSP build (avoids Bazel ABI issues)
+          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 \
+          build/build.sh CC="ccache clang"
 
       # =========================
-      # ARTIFACT PREP
+      # PREPARE OUTPUT
       # =========================
       - name: Prepare artifacts
         run: |
           set -e
 
-          OUTDIR=android-kernel/out/${{ inputs.tag }}/dist
+          # Detect output directory automatically
+          OUTDIR=$(find android-kernel -type d -path "*dist" | head -n 1)
 
-          # fallback if path differs
-          if [ ! -d "$OUTDIR" ]; then
-            OUTDIR=android-kernel/dist
-          fi
+          echo "Using OUTDIR=$OUTDIR"
 
           mkdir -p output
 
           if [ "${{ inputs.build_lkm }}" = "true" ]; then
 
-            if [ -f "$OUTDIR/kernelsu.ko" ]; then
-              LLVM_STRIP=$(which llvm-strip || true)
-
-              if [ -n "$LLVM_STRIP" ]; then
-                $LLVM_STRIP --strip-unneeded $OUTDIR/kernelsu.ko
-              else
-                strip --strip-unneeded $OUTDIR/kernelsu.ko || true
-              fi
-
-              mv $OUTDIR/kernelsu.ko ./output/${{ inputs.version }}_kernelsu.ko
-            else
+            if [ ! -f "$OUTDIR/kernelsu.ko" ]; then
               echo "kernelsu.ko not found!"
               exit 1
             fi
+
+            LLVM_STRIP=$(which llvm-strip || true)
+
+            if [ -n "$LLVM_STRIP" ]; then
+              $LLVM_STRIP --strip-unneeded $OUTDIR/kernelsu.ko
+            else
+              strip --strip-unneeded $OUTDIR/kernelsu.ko || true
+            fi
+
+            mv $OUTDIR/kernelsu.ko ./output/${{ inputs.version }}_kernelsu.ko
 
           else
             cp $OUTDIR/Image ./output/ || true
             cp $OUTDIR/Image.lz4 ./output/ || true
           fi
 
+      # =========================
+      # UPLOAD
+      # =========================
       - name: Upload LKM
         if: ${{ inputs.build_lkm == true }}
         uses: actions/upload-artifact@v4
